@@ -26,7 +26,7 @@ func NewIngestService(repo *storage.Repository, workers int, buffer int, logger 
 		logger:   logger,
 	}
 
-	for i := 0; i < workers; i++ {
+	for i := range workers {
 		s.wg.Add(1)
 		go s.worker(i)
 	}

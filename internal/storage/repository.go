@@ -8,14 +8,15 @@ import (
 	"flowgate/internal/models"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Repository struct {
-	conn *pgx.Conn
+	pool *pgxpool.Pool
 }
 
-func NewRepository(conn *pgx.Conn) *Repository {
-	return &Repository{conn: conn}
+func NewRepository(pool *pgxpool.Pool) *Repository {
+	return &Repository{pool: pool}
 }
 
 func (r *Repository) BulkInsert(ctx context.Context, points []models.TelemetryPoint) (int64, error) {
@@ -33,7 +34,7 @@ func (r *Repository) BulkInsert(ctx context.Context, points []models.TelemetryPo
 		}
 	}
 
-	copyCount, err := r.conn.CopyFrom(
+	copyCount, err := r.pool.CopyFrom(
 		ctx,
 		pgx.Identifier{"raw_metrics"},
 		[]string{"device_id", "metric", "value", "ts"},
@@ -48,7 +49,7 @@ func (r *Repository) BulkInsert(ctx context.Context, points []models.TelemetryPo
 // GetAggregated возвращает агрегированные данные (пока из сырой таблицы)
 // В будущем переключим на MV
 func (r *Repository) GetAggregated(ctx context.Context, deviceID string, from, to time.Time) ([]models.AggregatedPoint, error) {
-	rows, err := r.conn.Query(ctx, `
+	rows, err := r.pool.Query(ctx, `
 		SELECT
 			device_id,
 			date_trunc('minute', ts) as minute,

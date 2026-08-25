@@ -71,11 +71,9 @@ func main() {
 	handler := createHandler(ingestService, logger)
 	router := createGinRouter(handler, logger)
 
-	// Запускаем HTTP-сервер с graceful shutdown (5 секунд на завершение)
 	httpServer := server.New(fmt.Sprintf(":%s", cfg.Port), router, logger)
 	httpServer.RunAndWait(5 * time.Second)
 
-	// После остановки HTTP-сервера завершаем сервис ингеста
 	ctxSvc, cancelSvc := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelSvc()
 	if err := ingestService.Shutdown(ctxSvc); err != nil {
