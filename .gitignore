@@ -1,0 +1,29 @@
+# Binaries and compiled output
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Profiling files
+*.cpu
+*.mem
+
+# IDE and editor files
+.vscode/
+
+# Environment variables and secrets
+.env
+.env.local
+.env.*.local
+
+# Logs and temporary files
+logs/
+tmp/
+temp/
