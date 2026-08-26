@@ -40,3 +40,15 @@ graph TD
     Cache -->|miss| DBQuery[Repository.GetAggregated]
     DBQuery -->|SQL| PostgreSQL
     QueryHandler -->|update| Cache
+```
+
+## TODO
+
+* unit-тесты и интеграционные тесты
+* Партиционирование для таблицы raw_metrics
+* Безопасность API: RateLimiting, авторизация и аутентификация, HTTPS.
+* Ретраи или dead-letter queue при BulkInsert точек
+* Redis для инкремента счётчика точек и MV-рефрешера
+* Swagger
+* Обработка паник в воркерах
+* В будущем поддерка gRPC
