@@ -1,0 +1,8 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: flowgate
+    static_configs:
+      - targets: ["flowgate:8080"]
+    metrics_path: /metrics

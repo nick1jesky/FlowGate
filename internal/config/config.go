@@ -32,8 +32,10 @@ type Config struct {
 
 	// Ingest pipeline
 	IngestSubmitTimeout   time.Duration // сколько ждём места в очереди перед 503 (backpressure)
-	IngestTaskTimeout     time.Duration // таймаут на обработку одной задачи воркером
+	IngestTaskTimeout     time.Duration // таймаут на один flush (BulkInsert) батча в БД
 	IngestShutdownTimeout time.Duration // сколько ждём воркеров при graceful shutdown
+	IngestBatchMaxSize    int           // сброс батча по достижении этого числа точек
+	IngestBatchMaxDelay   time.Duration // сброс батча по таймеру, если точек накопилось меньше
 
 	// Query cache
 	CacheTTL            time.Duration // сколько всего хранить в Redis
@@ -41,6 +43,13 @@ type Config struct {
 	CacheRefreshTimeout time.Duration // таймаут фонового обновления кэша
 
 	HTTPShutdownTimeout time.Duration
+
+	// Адаптивное обновление материализованного представления
+	MVViewName                 string
+	MVRefreshMinInterval       time.Duration // интервал при высокой нагрузке
+	MVRefreshMaxInterval       time.Duration // интервал при низкой нагрузке/простое
+	MVRefreshHighRateThreshold float64       // точек/сек - выше этого используем MinInterval
+	MVRefreshLowRateThreshold  float64       // точек/сек - ниже этого используем MaxInterval
 }
 
 func Load() Config {
@@ -72,12 +81,20 @@ func Load() Config {
 		IngestSubmitTimeout:   getEnvAsDuration("INGEST_SUBMIT_TIMEOUT", 100*time.Millisecond),
 		IngestTaskTimeout:     getEnvAsDuration("INGEST_TASK_TIMEOUT", 5*time.Second),
 		IngestShutdownTimeout: getEnvAsDuration("INGEST_SHUTDOWN_TIMEOUT", 10*time.Second),
+		IngestBatchMaxSize:    getEnvAsInt("INGEST_BATCH_MAX_SIZE", 500),
+		IngestBatchMaxDelay:   getEnvAsDuration("INGEST_BATCH_MAX_DELAY", 200*time.Millisecond),
 
 		CacheTTL:            getEnvAsDuration("CACHE_TTL", 60*time.Second),
 		CacheStaleAfter:     getEnvAsDuration("CACHE_STALE_AFTER", 30*time.Second),
 		CacheRefreshTimeout: getEnvAsDuration("CACHE_REFRESH_TIMEOUT", 5*time.Second),
 
 		HTTPShutdownTimeout: getEnvAsDuration("HTTP_SHUTDOWN_TIMEOUT", 5*time.Second),
+
+		MVViewName:                 getEnvAsString("MV_VIEW_NAME", "agg_metrics_1m"),
+		MVRefreshMinInterval:       getEnvAsDuration("MV_REFRESH_MIN_INTERVAL", 5*time.Second),
+		MVRefreshMaxInterval:       getEnvAsDuration("MV_REFRESH_MAX_INTERVAL", 60*time.Second),
+		MVRefreshHighRateThreshold: getEnvAsFloat("MV_REFRESH_HIGH_RATE_THRESHOLD", 500),
+		MVRefreshLowRateThreshold:  getEnvAsFloat("MV_REFRESH_LOW_RATE_THRESHOLD", 50),
 	}
 }
 
@@ -97,10 +114,20 @@ func getEnvAsInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
+// getEnvAsDuration парсит значения вида "500ms", "5s", "2m" (формат time.ParseDuration).
 func getEnvAsDuration(key string, defaultValue time.Duration) time.Duration {
 	if val := os.Getenv(key); val != "" {
 		if d, err := time.ParseDuration(val); err == nil {
 			return d
+		}
+	}
+	return defaultValue
+}
+
+func getEnvAsFloat(key string, defaultValue float64) float64 {
+	if val := os.Getenv(key); val != "" {
+		if f, err := strconv.ParseFloat(val, 64); err == nil {
+			return f
 		}
 	}
 	return defaultValue

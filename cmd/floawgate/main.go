@@ -3,16 +3,21 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"flowgate/internal/api"
 	"flowgate/internal/cache"
 	"flowgate/internal/config"
+	"flowgate/internal/metrics"
+	"flowgate/internal/refresher"
 	"flowgate/internal/server"
 	"flowgate/internal/service"
 	"flowgate/internal/storage"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 )
 
@@ -55,7 +60,7 @@ func createRepository(pool *pgxpool.Pool) *storage.Repository {
 }
 
 func createIngestService(repo *storage.Repository, cfg *config.Config, logger *logrus.Logger) *service.IngestService {
-	return service.NewIngestService(repo, cfg.WorkersCount, cfg.ChannelBuffer, cfg.IngestTaskTimeout, logger)
+	return service.NewIngestService(repo, cfg.WorkersCount, cfg.ChannelBuffer, cfg.IngestTaskTimeout, cfg.IngestBatchMaxSize, cfg.IngestBatchMaxDelay, logger)
 }
 
 func createHandler(ingestService *service.IngestService, c cache.Cache, cfg *config.Config, logger *logrus.Logger) *api.Handler {
@@ -67,11 +72,23 @@ func createHandler(ingestService *service.IngestService, c cache.Cache, cfg *con
 	}, logger)
 }
 
+func createMVRefresher(pool *pgxpool.Pool, cfg *config.Config, rate refresher.RateSource, logger *logrus.Logger) *refresher.Refresher {
+	return refresher.New(pool, refresher.Config{
+		ViewName:          cfg.MVViewName,
+		MinInterval:       cfg.MVRefreshMinInterval,
+		MaxInterval:       cfg.MVRefreshMaxInterval,
+		HighRateThreshold: cfg.MVRefreshHighRateThreshold,
+		LowRateThreshold:  cfg.MVRefreshLowRateThreshold,
+	}, rate, logger)
+}
+
 func createGinRouter(handler *api.Handler, logger *logrus.Logger) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.LoggerWithWriter(logger.Writer()))
 	router.Use(gin.Recovery())
+
+	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	v1 := router.Group("/api/v1")
 	{
@@ -90,6 +107,7 @@ func main() {
 
 	pool := connectPostgres(ctx, &cfg, logger)
 	defer pool.Close()
+	prometheus.MustRegister(metrics.NewPoolCollector(pool))
 
 	redisCache := connectRedis(ctx, &cfg, logger)
 	if rc, ok := redisCache.(*cache.RedisCache); ok {
@@ -101,13 +119,34 @@ func main() {
 	handler := createHandler(ingestService, redisCache, &cfg, logger)
 	router := createGinRouter(handler, logger)
 
+	// Адаптивный рефреш материализованного представления - интервал
+	// подстраивается под скорость приёма (см. internal/refresher).
+	mvRefresher := createMVRefresher(pool, &cfg, ingestService, logger)
+	refresherCtx, cancelRefresher := context.WithCancel(context.Background())
+	refresherDone := make(chan struct{})
+	go func() {
+		defer close(refresherDone)
+		mvRefresher.Run(refresherCtx)
+	}()
+
+	// Запускаем HTTP-сервер с graceful shutdown
 	httpServer := server.New(fmt.Sprintf(":%s", cfg.Port), router, logger)
 	httpServer.RunAndWait(cfg.HTTPShutdownTimeout)
 
+	// После остановки HTTP-сервера завершаем сервис ингеста
 	ctxSvc, cancelSvc := context.WithTimeout(context.Background(), cfg.IngestShutdownTimeout)
 	defer cancelSvc()
 	if err := ingestService.Shutdown(ctxSvc); err != nil {
 		logger.WithError(err).Error("Ingest service shutdown timeout")
+	}
+
+	// Останавливаем MV-рефрешер (после воркеров, но до закрытия пула,
+	// который используется отложенным defer pool.Close() выше)
+	cancelRefresher()
+	select {
+	case <-refresherDone:
+	case <-time.After(2 * time.Second):
+		logger.Warn("MV refresher did not stop in time")
 	}
 
 	logger.Info("Server stopped completely")
