@@ -7,13 +7,7 @@ import (
 	"flowgate/internal/models"
 )
 
-// DefaultTimeout — таймаут на обработку задачи воркером. Не зависит от
-// жизненного цикла HTTP-запроса, который создал задачу: к моменту, когда
-// воркер заберёт её из канала, исходный http-контекст уже мог быть отменён
-// (ранее это приводило к тому, что BulkInsert падал с context canceled).
-const DefaultTimeout = 5 * time.Second
-
-// IngestTask — единица работы для воркер-пула ingest-сервиса.
+// IngestTask - единица работы для воркер-пула ingest-сервиса.
 type IngestTask struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -23,10 +17,14 @@ type IngestTask struct {
 }
 
 // NewIngestTask создаёт задачу с собственным независимым контекстом
-// (не унаследованным от HTTP-запроса). withResult=true, если вызывающая
-// сторона хочет дождаться результата обработки.
-func NewIngestTask(points []models.TelemetryPoint, withResult bool) *IngestTask {
-	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+// (не унаследованным от HTTP-запроса) - иначе к моменту, когда воркер
+// заберёт задачу из канала, исходный http-контекст уже может быть отменён
+// (BulkInsert будет падать с context canceled). timeout - на сколько
+// воркеру отводится на обработку этой конкретной задачи; настраивается
+// через IngestTaskTimeout, конфигурация не зашита в код.
+// withResult=true, если вызывающая сторона хочет дождаться результата.
+func NewIngestTask(points []models.TelemetryPoint, timeout time.Duration, withResult bool) *IngestTask {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 
 	t := &IngestTask{
 		ctx:    ctx,
@@ -39,14 +37,14 @@ func NewIngestTask(points []models.TelemetryPoint, withResult bool) *IngestTask 
 	return t
 }
 
-// Context возвращает контекст задачи — используется воркером для BulkInsert.
+// Context возвращает контекст задачи - используется воркером для BulkInsert.
 func (t *IngestTask) Context() context.Context {
 	return t.ctx
 }
 
 // Done освобождает ресурсы контекста задачи. Обязательно вызывать после
 // того, как воркер закончил обработку (успешно или нет), иначе контексты
-// будут копиться до истечения DefaultTimeout.
+// будут копиться до истечения своего timeout.
 func (t *IngestTask) Done() {
 	t.cancel()
 }

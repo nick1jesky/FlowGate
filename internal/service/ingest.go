@@ -13,17 +13,19 @@ import (
 )
 
 type IngestService struct {
-	repo     *storage.Repository
-	ingestCh chan *task.IngestTask
-	wg       sync.WaitGroup
-	logger   *logrus.Logger
+	repo        *storage.Repository
+	ingestCh    chan *task.IngestTask
+	wg          sync.WaitGroup
+	logger      *logrus.Logger
+	taskTimeout time.Duration
 }
 
-func NewIngestService(repo *storage.Repository, workers int, buffer int, logger *logrus.Logger) *IngestService {
+func NewIngestService(repo *storage.Repository, workers, buffer int, taskTimeout time.Duration, logger *logrus.Logger) *IngestService {
 	s := &IngestService{
-		repo:     repo,
-		ingestCh: make(chan *task.IngestTask, buffer),
-		logger:   logger,
+		repo:        repo,
+		ingestCh:    make(chan *task.IngestTask, buffer),
+		logger:      logger,
+		taskTimeout: taskTimeout,
 	}
 
 	for i := range workers {
@@ -66,9 +68,9 @@ func (s *IngestService) worker(id int) {
 // используется ТОЛЬКО для контроля таймаута постановки в канал (backpressure) —
 // он НЕ передаётся воркеру, так как HTTP-запрос обычно завершается
 // (и его ctx отменяется) задолго до того, как воркер реально обработает
-// задачу. У самой задачи — собственный независимый контекст, см. internal/task.
+// задачу. У самой задачи - собственный независимый таймаут, см. internal/task.
 func (s *IngestService) Submit(ctx context.Context, points []models.TelemetryPoint) error {
-	t := task.NewIngestTask(points, false)
+	t := task.NewIngestTask(points, s.taskTimeout, false)
 	select {
 	case s.ingestCh <- t:
 		return nil

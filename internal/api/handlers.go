@@ -15,23 +15,28 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// В дальнейшем заменить на переменные среды
-const (
-	cacheTTL   = 60 * time.Second
-	staleAfter = 30 * time.Second
-)
+// Options - таймауты и TTL, которые раньше были захардкожены; теперь
+// приходят из config.Config (переменные среды), а не зашиты в код.
+type Options struct {
+	SubmitTimeout   time.Duration // сколько ждём места в очереди перед 503
+	CacheTTL        time.Duration
+	CacheStaleAfter time.Duration
+	RefreshTimeout  time.Duration // таймаут фонового обновления кэша
+}
 
 type Handler struct {
 	ingestService *service.IngestService
 	logger        *logrus.Logger
 	cache         cache.Cache
+	opts          Options
 }
 
-func NewHandler(ingestService *service.IngestService, c cache.Cache, logger *logrus.Logger) *Handler {
+func NewHandler(ingestService *service.IngestService, c cache.Cache, opts Options, logger *logrus.Logger) *Handler {
 	return &Handler{
 		ingestService: ingestService,
 		logger:        logger,
 		cache:         c,
+		opts:          opts,
 	}
 }
 
@@ -42,7 +47,7 @@ func (h *Handler) Ingest(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), h.opts.SubmitTimeout)
 	defer cancel()
 
 	if err := h.ingestService.Submit(ctx, req); err != nil {
@@ -88,7 +93,7 @@ func (h *Handler) Query(c *gin.Context) {
 		var item cacheItem
 		if unmarshalErr := json.Unmarshal(raw, &item); unmarshalErr == nil {
 			age := time.Since(item.FetchedAt)
-			if age > staleAfter {
+			if age > h.opts.CacheStaleAfter {
 				c.Header("X-Cache-Status", "stale")
 				h.logger.WithField("cache_key", cacheKey).Debug("Serving stale cache")
 				go h.refreshCache(cacheKey, deviceID, from, to)
@@ -113,10 +118,10 @@ func (h *Handler) Query(c *gin.Context) {
 	c.JSON(http.StatusOK, data)
 }
 
-// refreshCache — фоновая актуализация кэша (не привязана к ctx HTTP-запроса,
+// refreshCache - фоновая актуализация кэша (не привязана к ctx HTTP-запроса,
 // который к моменту выполнения этой горутины уже может быть завершён).
 func (h *Handler) refreshCache(key, deviceID string, from, to time.Time) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), h.opts.RefreshTimeout)
 	defer cancel()
 
 	data, err := h.ingestService.GetAggregated(ctx, deviceID, from, to)
@@ -134,12 +139,12 @@ func (h *Handler) storeInCache(ctx context.Context, key string, data []models.Ag
 		h.logger.WithError(err).Warn("Failed to marshal cache payload")
 		return
 	}
-	if err := h.cache.Set(ctx, key, payload, cacheTTL); err != nil {
+	if err := h.cache.Set(ctx, key, payload, h.opts.CacheTTL); err != nil {
 		h.logger.WithError(err).WithField("cache_key", key).Warn("Failed to write cache")
 	}
 }
 
-// cacheItem — обёртка для хранения с меткой времени.
+// cacheItem - обёртка для хранения с меткой времени.
 type cacheItem struct {
 	Data      []models.AggregatedPoint `json:"data"`
 	FetchedAt time.Time                `json:"fetched_at"`

@@ -3,16 +3,16 @@ package main
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"flowgate/internal/api"
+	"flowgate/internal/cache"
 	"flowgate/internal/config"
 	"flowgate/internal/server"
 	"flowgate/internal/service"
 	"flowgate/internal/storage"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sirupsen/logrus"
 )
 
@@ -23,24 +23,48 @@ func startLogger() *logrus.Logger {
 	return logger
 }
 
-func connectPostgres(ctx context.Context, cfg *config.Config, logger *logrus.Logger) *pgx.Conn {
-	conn, err := pgx.Connect(ctx, cfg.DatabaseURL)
+func connectPostgres(ctx context.Context, cfg *config.Config, logger *logrus.Logger) *pgxpool.Pool {
+	pool, err := storage.NewPool(ctx, cfg.DatabaseURL, storage.PoolOptions{
+		MaxConns:          cfg.DBMaxConns,
+		MinConns:          cfg.DBMinConns,
+		MaxConnLifetime:   cfg.DBMaxConnLifetime,
+		MaxConnIdleTime:   cfg.DBMaxConnIdleTime,
+		HealthCheckPeriod: cfg.DBHealthCheckPeriod,
+		ConnectTimeout:    cfg.DBConnectTimeout,
+	}, logger)
 	if err != nil {
 		logger.WithError(err).Fatal("Unable to connect to database")
 	}
-	return conn
+	return pool
 }
 
-func createRepository(conn *pgx.Conn) *storage.Repository {
-	return storage.NewRepository(conn)
+func connectRedis(ctx context.Context, cfg *config.Config, logger *logrus.Logger) cache.Cache {
+	return cache.Connect(ctx, cache.Options{
+		Addr:         cfg.RedisAddr,
+		Password:     cfg.RedisPassword,
+		DB:           cfg.RedisDB,
+		DialTimeout:  cfg.RedisDialTimeout,
+		ReadTimeout:  cfg.RedisReadTimeout,
+		WriteTimeout: cfg.RedisWriteTimeout,
+		PoolSize:     cfg.RedisPoolSize,
+	}, cfg.RedisPingTimeout, logger)
+}
+
+func createRepository(pool *pgxpool.Pool) *storage.Repository {
+	return storage.NewRepository(pool)
 }
 
 func createIngestService(repo *storage.Repository, cfg *config.Config, logger *logrus.Logger) *service.IngestService {
-	return service.NewIngestService(repo, cfg.WorkersCount, cfg.ChannelBuffer, logger)
+	return service.NewIngestService(repo, cfg.WorkersCount, cfg.ChannelBuffer, cfg.IngestTaskTimeout, logger)
 }
 
-func createHandler(ingestService *service.IngestService, logger *logrus.Logger) *api.Handler {
-	return api.NewHandler(ingestService, logger)
+func createHandler(ingestService *service.IngestService, c cache.Cache, cfg *config.Config, logger *logrus.Logger) *api.Handler {
+	return api.NewHandler(ingestService, c, api.Options{
+		SubmitTimeout:   cfg.IngestSubmitTimeout,
+		CacheTTL:        cfg.CacheTTL,
+		CacheStaleAfter: cfg.CacheStaleAfter,
+		RefreshTimeout:  cfg.CacheRefreshTimeout,
+	}, logger)
 }
 
 func createGinRouter(handler *api.Handler, logger *logrus.Logger) *gin.Engine {
@@ -63,18 +87,24 @@ func main() {
 	logger.Info("Starting flowgate Gateway")
 
 	ctx := context.Background()
-	conn := connectPostgres(ctx, &cfg, logger)
-	defer conn.Close(ctx)
 
-	repo := createRepository(conn)
+	pool := connectPostgres(ctx, &cfg, logger)
+	defer pool.Close()
+
+	redisCache := connectRedis(ctx, &cfg, logger)
+	if rc, ok := redisCache.(*cache.RedisCache); ok {
+		defer rc.Close()
+	}
+
+	repo := createRepository(pool)
 	ingestService := createIngestService(repo, &cfg, logger)
-	handler := createHandler(ingestService, logger)
+	handler := createHandler(ingestService, redisCache, &cfg, logger)
 	router := createGinRouter(handler, logger)
 
 	httpServer := server.New(fmt.Sprintf(":%s", cfg.Port), router, logger)
-	httpServer.RunAndWait(5 * time.Second)
+	httpServer.RunAndWait(cfg.HTTPShutdownTimeout)
 
-	ctxSvc, cancelSvc := context.WithTimeout(context.Background(), 10*time.Second)
+	ctxSvc, cancelSvc := context.WithTimeout(context.Background(), cfg.IngestShutdownTimeout)
 	defer cancelSvc()
 	if err := ingestService.Shutdown(ctxSvc); err != nil {
 		logger.WithError(err).Error("Ingest service shutdown timeout")

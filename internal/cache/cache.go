@@ -9,27 +9,40 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// Минимальный интерфейс. Позволяет подменять реализацию без изменения кода вызывающей стороны.
+// Cache - минимальный интерфейс, нужный хендлерам. Позволяет подменять
+// реализацию (Redis / no-op) без изменения кода вызывающей стороны.
 type Cache interface {
 	Get(ctx context.Context, key string) ([]byte, bool, error)
 	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
 }
 
-// RedisCache — реализация поверх go-redis.
+// Options - все параметры соединения с Redis, настраиваемые снаружи
+// (через переменные среды в config.Config), а не зашитые в код.
+type Options struct {
+	Addr         string
+	Password     string
+	DB           int
+	DialTimeout  time.Duration
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	PoolSize     int
+}
+
+// RedisCache - реализация поверх go-redis.
 type RedisCache struct {
 	client *redis.Client
 }
 
-func NewRedisCache(addr, password string, db int) *RedisCache {
+func NewRedisCache(opts Options) *RedisCache {
 	return &RedisCache{
 		client: redis.NewClient(&redis.Options{
-			Addr:         addr,
-			Password:     password,
-			DB:           db,
-			DialTimeout:  2 * time.Second,
-			ReadTimeout:  500 * time.Millisecond,
-			WriteTimeout: 500 * time.Millisecond,
-			PoolSize:     20,
+			Addr:         opts.Addr,
+			Password:     opts.Password,
+			DB:           opts.DB,
+			DialTimeout:  opts.DialTimeout,
+			ReadTimeout:  opts.ReadTimeout,
+			WriteTimeout: opts.WriteTimeout,
+			PoolSize:     opts.PoolSize,
 		}),
 	}
 }
@@ -57,7 +70,7 @@ func (r *RedisCache) Set(ctx context.Context, key string, value []byte, ttl time
 	return r.client.Set(ctx, key, value, ttl).Err()
 }
 
-// NoopCache — заглушка на случай, если Redis недоступен при старте.
+// NoopCache - заглушка на случай, если Redis недоступен при старте.
 // Сервис не должен падать целиком из-за недоступности кэша: /query
 // в этом режиме просто всегда идёт в БД. Это осознанный компромисс
 // "деградация вместо отказа".
@@ -68,10 +81,11 @@ func (NoopCache) Set(_ context.Context, _ string, _ []byte, _ time.Duration) err
 
 // Connect пытается поднять RedisCache; при неудаче логирует предупреждение
 // и возвращает NoopCache, чтобы остальной сервис продолжил работать.
-func Connect(ctx context.Context, addr, password string, db int, logger *logrus.Logger) Cache {
-	rc := NewRedisCache(addr, password, db)
+// pingTimeout - сколько ждём ответа от Redis при старте, тоже настраиваемо.
+func Connect(ctx context.Context, opts Options, pingTimeout time.Duration, logger *logrus.Logger) Cache {
+	rc := NewRedisCache(opts)
 
-	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
 	defer cancel()
 
 	if err := rc.Ping(pingCtx); err != nil {
@@ -79,6 +93,6 @@ func Connect(ctx context.Context, addr, password string, db int, logger *logrus.
 		return NoopCache{}
 	}
 
-	logger.WithField("addr", addr).Info("Redis cache ready")
+	logger.WithField("addr", opts.Addr).Info("Redis cache ready")
 	return rc
 }
