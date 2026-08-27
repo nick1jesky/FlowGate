@@ -35,6 +35,8 @@ services:
         condition: service_healthy
     ports:
       - "8080:8080"
+    volumes:
+      - dlq_data:/app/data/dlq
     environment:
       DATABASE_URL: "postgres://flowgate:flowgate@postgres:5432/flowgate?sslmode=disable"
       PORT: "8080"
@@ -60,6 +62,11 @@ services:
       INGEST_SUBMIT_TIMEOUT: "${INGEST_SUBMIT_TIMEOUT:-100ms}"
       INGEST_TASK_TIMEOUT: "${INGEST_TASK_TIMEOUT:-5s}"
       INGEST_SHUTDOWN_TIMEOUT: "${INGEST_SHUTDOWN_TIMEOUT:-10s}"
+      INGEST_BATCH_MAX_SIZE: "${INGEST_BATCH_MAX_SIZE:-500}"
+      INGEST_BATCH_MAX_DELAY: "${INGEST_BATCH_MAX_DELAY:-200ms}"
+      INGEST_FLUSH_MAX_RETRIES: "${INGEST_FLUSH_MAX_RETRIES:-3}"
+      INGEST_FLUSH_RETRY_BACKOFF: "${INGEST_FLUSH_RETRY_BACKOFF:-200ms}"
+      INGEST_DLQ_PATH: "${INGEST_DLQ_PATH:-/app/data/dlq/flowgate-dlq.jsonl}"
 
       CACHE_TTL: "${CACHE_TTL:-60s}"
       CACHE_STALE_AFTER: "${CACHE_STALE_AFTER:-30s}"
@@ -67,5 +74,29 @@ services:
 
       HTTP_SHUTDOWN_TIMEOUT: "${HTTP_SHUTDOWN_TIMEOUT:-5s}"
 
+      MV_VIEW_NAME: "${MV_VIEW_NAME:-agg_metrics_1m}"
+      MV_REFRESH_MIN_INTERVAL: "${MV_REFRESH_MIN_INTERVAL:-5s}"
+      MV_REFRESH_MAX_INTERVAL: "${MV_REFRESH_MAX_INTERVAL:-60s}"
+      MV_REFRESH_HIGH_RATE_THRESHOLD: "${MV_REFRESH_HIGH_RATE_THRESHOLD:-500}"
+      MV_REFRESH_LOW_RATE_THRESHOLD: "${MV_REFRESH_LOW_RATE_THRESHOLD:-50}"
+      MV_RATE_REDIS_KEY: "${MV_RATE_REDIS_KEY:-flowgate:ingest:rate}"
+
+      # Пусто по умолчанию — auth выключен. Задай через .env, чтобы включить.
+      API_KEYS: "${API_KEYS:-}"
+      RATE_LIMIT_RPS: "${RATE_LIMIT_RPS:-100}"
+      RATE_LIMIT_BURST: "${RATE_LIMIT_BURST:-200}"
+      # TLS_CERT_FILE / TLS_KEY_FILE — пусто по умолчанию (plain HTTP;
+      # в проде TLS обычно терминируется на ingress/reverse-proxy).
+
+  prometheus:
+    image: prom/prometheus:latest
+    depends_on:
+      - flowgate
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
 volumes:
   pgdata:
+  dlq_data:

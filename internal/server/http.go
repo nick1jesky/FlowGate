@@ -15,22 +15,34 @@ import (
 type HTTPServer struct {
 	srv    *http.Server
 	logger *logrus.Logger
+
+	tlsCertFile string
+	tlsKeyFile  string
 }
 
-func New(addr string, handler *gin.Engine, logger *logrus.Logger) *HTTPServer {
+func New(addr string, handler *gin.Engine, certFile, keyFile string, logger *logrus.Logger) *HTTPServer {
 	return &HTTPServer{
 		srv: &http.Server{
 			Addr:    addr,
 			Handler: handler,
 		},
-		logger: logger,
+		logger:      logger,
+		tlsCertFile: certFile,
+		tlsKeyFile:  keyFile,
 	}
 }
 
 func (s *HTTPServer) RunAndWait(shutdownTimeout time.Duration) {
 	go func() {
-		s.logger.WithField("addr", s.srv.Addr).Info("Starting HTTP server")
-		if err := s.srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if s.tlsCertFile != "" && s.tlsKeyFile != "" {
+			s.logger.WithField("addr", s.srv.Addr).Info("Starting HTTPS server")
+			err = s.srv.ListenAndServeTLS(s.tlsCertFile, s.tlsKeyFile)
+		} else {
+			s.logger.WithField("addr", s.srv.Addr).Info("Starting HTTP server")
+			err = s.srv.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			s.logger.WithError(err).Fatal("HTTP server failed")
 		}
 	}()

@@ -8,30 +8,33 @@ import (
 	"time"
 
 	"flowgate/internal/cache"
+	"flowgate/internal/metrics"
 	"flowgate/internal/models"
-	"flowgate/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
 
-// Options - таймауты и TTL, которые раньше были захардкожены; теперь
-// приходят из config.Config (переменные среды), а не зашиты в код.
+type IngestService interface {
+	Submit(ctx context.Context, points []models.TelemetryPoint) error
+	GetAggregated(ctx context.Context, deviceID string, from, to time.Time) ([]models.AggregatedPoint, error)
+}
+
 type Options struct {
-	SubmitTimeout   time.Duration // сколько ждём места в очереди перед 503
+	SubmitTimeout   time.Duration
 	CacheTTL        time.Duration
 	CacheStaleAfter time.Duration
-	RefreshTimeout  time.Duration // таймаут фонового обновления кэша
+	RefreshTimeout  time.Duration
 }
 
 type Handler struct {
-	ingestService *service.IngestService
+	ingestService IngestService
 	logger        *logrus.Logger
 	cache         cache.Cache
 	opts          Options
 }
 
-func NewHandler(ingestService *service.IngestService, c cache.Cache, opts Options, logger *logrus.Logger) *Handler {
+func NewHandler(ingestService IngestService, c cache.Cache, opts Options, logger *logrus.Logger) *Handler {
 	return &Handler{
 		ingestService: ingestService,
 		logger:        logger,
@@ -51,11 +54,14 @@ func (h *Handler) Ingest(c *gin.Context) {
 	defer cancel()
 
 	if err := h.ingestService.Submit(ctx, req); err != nil {
+		metrics.IngestRequestsTotal.WithLabelValues("rejected").Inc()
 		h.logger.WithError(err).Warn("Ingest submission failed")
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ingest queue is full, try again later"})
 		return
 	}
 
+	metrics.IngestRequestsTotal.WithLabelValues("accepted").Inc()
+	metrics.IngestPointsTotal.Add(float64(len(req)))
 	c.JSON(http.StatusAccepted, gin.H{"status": "accepted"})
 }
 
@@ -86,26 +92,32 @@ func (h *Handler) Query(c *gin.Context) {
 
 	cacheKey := fmt.Sprintf("agg:%s:%d:%d", deviceID, from.Unix(), to.Unix())
 	ctx := c.Request.Context()
+	queryStart := time.Now()
 
 	if raw, found, err := h.cache.Get(ctx, cacheKey); err != nil {
+		metrics.CacheRequestsTotal.WithLabelValues("error").Inc()
 		h.logger.WithError(err).Warn("Cache read failed, falling back to DB")
 	} else if found {
 		var item cacheItem
 		if unmarshalErr := json.Unmarshal(raw, &item); unmarshalErr == nil {
 			age := time.Since(item.FetchedAt)
 			if age > h.opts.CacheStaleAfter {
+				metrics.CacheRequestsTotal.WithLabelValues("stale").Inc()
 				c.Header("X-Cache-Status", "stale")
 				h.logger.WithField("cache_key", cacheKey).Debug("Serving stale cache")
 				go h.refreshCache(cacheKey, deviceID, from, to)
 			} else {
+				metrics.CacheRequestsTotal.WithLabelValues("hit").Inc()
 				c.Header("X-Cache-Status", "hit")
 			}
+			metrics.QueryDuration.WithLabelValues("cache").Observe(time.Since(queryStart).Seconds())
 			c.JSON(http.StatusOK, item.Data)
 			return
 		}
 		h.logger.WithField("cache_key", cacheKey).Warn("Cache payload corrupted, ignoring")
 	}
 
+	metrics.CacheRequestsTotal.WithLabelValues("miss").Inc()
 	c.Header("X-Cache-Status", "miss")
 	data, err := h.ingestService.GetAggregated(ctx, deviceID, from, to)
 	if err != nil {
@@ -113,13 +125,13 @@ func (h *Handler) Query(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		return
 	}
+	metrics.QueryDuration.WithLabelValues("db").Observe(time.Since(queryStart).Seconds())
 
 	h.storeInCache(ctx, cacheKey, data)
 	c.JSON(http.StatusOK, data)
 }
 
-// refreshCache - фоновая актуализация кэша (не привязана к ctx HTTP-запроса,
-// который к моменту выполнения этой горутины уже может быть завершён).
+// Фоновая актуализация кэша, которая не привязана к ctx http запроса.
 func (h *Handler) refreshCache(key, deviceID string, from, to time.Time) {
 	ctx, cancel := context.WithTimeout(context.Background(), h.opts.RefreshTimeout)
 	defer cancel()
@@ -144,7 +156,6 @@ func (h *Handler) storeInCache(ctx context.Context, key string, data []models.Ag
 	}
 }
 
-// cacheItem - обёртка для хранения с меткой времени.
 type cacheItem struct {
 	Data      []models.AggregatedPoint `json:"data"`
 	FetchedAt time.Time                `json:"fetched_at"`

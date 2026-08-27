@@ -66,6 +66,27 @@ var (
 		Help:      "Total batch flushes, by trigger (size, timer, shutdown).",
 	}, []string{"trigger"})
 
+	FlushRetriesTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "flowgate",
+		Subsystem: "ingest",
+		Name:      "flush_retries_total",
+		Help:      "Total retry attempts for a failed batch flush.",
+	})
+
+	DLQWritesTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "flowgate",
+		Subsystem: "ingest",
+		Name:      "dlq_writes_total",
+		Help:      "Total batches written to the dead-letter queue after exhausting retries.",
+	})
+
+	WorkerPanicsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "flowgate",
+		Subsystem: "ingest",
+		Name:      "worker_panics_total",
+		Help:      "Total recovered panics in ingest workers (worker is restarted after each).",
+	})
+
 	// Query path / cache
 	CacheRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "flowgate",
@@ -113,9 +134,6 @@ var (
 	})
 )
 
-// PoolCollector - кастомный Prometheus-коллектор поверх pgxpool.Stat().
-// Опрашивается при каждом scrape /metrics (pull-модель), а не отдельной
-// горутиной - так метрики пула всегда актуальны на момент запроса.
 type PoolCollector struct {
 	pool     *pgxpool.Pool
 	acquired *prometheus.Desc

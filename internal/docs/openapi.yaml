@@ -1,0 +1,132 @@
+openapi: 3.0.3
+info:
+  title: FlowGate API
+  description: >
+    Приём и агрегация потоковой телеметрии. Приём — асинхронный
+    (202 Accepted сразу, запись в БД батчами в фоне); чтение агрегатов —
+    через материализованное представление с кэшированием в Redis
+    (stale-while-revalidate).
+  version: "1.0.0"
+servers:
+  - url: /api/v1
+paths:
+  /ingest:
+    post:
+      summary: Принять пачку точек телеметрии
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: "#/components/schemas/TelemetryPoint"
+      responses:
+        "202":
+          description: Точки поставлены в очередь на асинхронную запись
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: accepted
+        "400":
+          description: Некорректное тело запроса
+        "401":
+          description: Отсутствует или неверный API-ключ
+        "429":
+          description: Превышен лимит запросов
+        "503":
+          description: Очередь приёма заполнена (backpressure) — повторить позже
+  /query:
+    get:
+      summary: Получить агрегаты по устройству за период
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: device_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: from
+          in: query
+          required: true
+          description: RFC3339, начало периода (включительно)
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: true
+          description: RFC3339, конец периода (включительно)
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Минутные агрегаты за период
+          headers:
+            X-Cache-Status:
+              description: hit | stale | miss
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AggregatedPoint"
+        "400":
+          description: Некорректные параметры запроса
+        "401":
+          description: Отсутствует или неверный API-ключ
+        "429":
+          description: Превышен лимит запросов
+        "500":
+          description: Ошибка базы данных
+  /metrics:
+    get:
+      summary: Prometheus-метрики
+      responses:
+        "200":
+          description: Метрики в формате Prometheus text exposition
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >
+        Требуется, только если задана переменная среды API_KEYS.
+        По умолчанию (без API_KEYS) auth выключен.
+  schemas:
+    TelemetryPoint:
+      type: object
+      required: [device_id, metric, value, timestamp]
+      properties:
+        device_id:
+          type: string
+        metric:
+          type: string
+        value:
+          type: number
+          format: double
+        timestamp:
+          type: string
+          format: date-time
+    AggregatedPoint:
+      type: object
+      properties:
+        device_id:
+          type: string
+        minute:
+          type: string
+          format: date-time
+        avg_value:
+          type: number
+          format: double

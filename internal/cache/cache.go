@@ -9,15 +9,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// Cache - минимальный интерфейс, нужный хендлерам. Позволяет подменять
-// реализацию (Redis / no-op) без изменения кода вызывающей стороны.
 type Cache interface {
 	Get(ctx context.Context, key string) ([]byte, bool, error)
 	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
 }
 
-// Options - все параметры соединения с Redis, настраиваемые снаружи
-// (через переменные среды в config.Config), а не зашитые в код.
 type Options struct {
 	Addr         string
 	Password     string
@@ -28,7 +24,6 @@ type Options struct {
 	PoolSize     int
 }
 
-// RedisCache - реализация поверх go-redis.
 type RedisCache struct {
 	client *redis.Client
 }
@@ -70,18 +65,30 @@ func (r *RedisCache) Set(ctx context.Context, key string, value []byte, ttl time
 	return r.client.Set(ctx, key, value, ttl).Err()
 }
 
+// addAndSwapScript атомарно (через Lua на стороне Redis, где выполнение
+// скрипта однопоточно и не может быть прервано другим клиентом) добавляет
+// delta к общему счётчику и сбрасывает его в 0, возвращая значение ДО
+// сброса. Инкременты от других инстансов, случившиеся строго между двумя
+// вызовами этого скрипта, корректно учитываются в следующем вызове —
+// таким образом можно агрегировать скорость приёма по всем инстансам
+// flowgate, а не только по одному процессу.
+var addAndSwapScript = redis.NewScript(`
+local total = redis.call('INCRBY', KEYS[1], ARGV[1])
+redis.call('SET', KEYS[1], 0)
+return total
+`)
+
+// AddAndSwap реализует refresher.RedisIncrSwapper.
+func (r *RedisCache) AddAndSwap(ctx context.Context, key string, delta int64) (int64, error) {
+	return addAndSwapScript.Run(ctx, r.client, []string{key}, delta).Int64()
+}
+
 // NoopCache - заглушка на случай, если Redis недоступен при старте.
-// Сервис не должен падать целиком из-за недоступности кэша: /query
-// в этом режиме просто всегда идёт в БД. Это осознанный компромисс
-// "деградация вместо отказа".
 type NoopCache struct{}
 
 func (NoopCache) Get(_ context.Context, _ string) ([]byte, bool, error)            { return nil, false, nil }
 func (NoopCache) Set(_ context.Context, _ string, _ []byte, _ time.Duration) error { return nil }
 
-// Connect пытается поднять RedisCache; при неудаче логирует предупреждение
-// и возвращает NoopCache, чтобы остальной сервис продолжил работать.
-// pingTimeout - сколько ждём ответа от Redis при старте, тоже настраиваемо.
 func Connect(ctx context.Context, opts Options, pingTimeout time.Duration, logger *logrus.Logger) Cache {
 	rc := NewRedisCache(opts)
 
