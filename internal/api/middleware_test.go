@@ -56,7 +56,7 @@ func TestAPIKeyAuth_AcceptsValidKey(t *testing.T) {
 func TestRateLimiter_DisabledWhenRPSNonPositive(t *testing.T) {
 	rl := NewRateLimiter(0, 0)
 	r := newTestRouter(rl.Middleware())
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		req := httptest.NewRequest(http.MethodGet, "/ping", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -101,5 +101,5 @@ func TestRateLimiter_SeparateClientsHaveSeparateBuckets(t *testing.T) {
 		t.Fatalf("expected both first requests from distinct IPs to succeed, got %d and %d", w1.Code, w2.Code)
 	}
 
-	time.Sleep(10 * time.Millisecond) // не влияет на результат, просто гигиена таймингов
+	time.Sleep(10 * time.Millisecond)
 }

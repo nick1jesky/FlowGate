@@ -2,15 +2,36 @@ openapi: 3.0.3
 info:
   title: FlowGate API
   description: >
-    Приём и агрегация потоковой телеметрии. Приём — асинхронный
+    Приём и агрегация потоковой телеметрии. Приём - асинхронный
     (202 Accepted сразу, запись в БД батчами в фоне); чтение агрегатов —
     через материализованное представление с кэшированием в Redis
     (stale-while-revalidate).
   version: "1.0.0"
-servers:
-  - url: /api/v1
 paths:
-  /ingest:
+  /healthz:
+    get:
+      summary: Liveness - процесс жив
+      description: Не проверяет зависимости (БД/Redis) - только то, что процесс отвечает.
+      responses:
+        "200":
+          description: OK
+  /readyz:
+    get:
+      summary: Readiness - готовность принимать трафик
+      description: >
+        БД обязательна (503, если недоступна). Redis - нет.
+      responses:
+        "200":
+          description: Готов (возможно с деградацией)
+        "503":
+          description: БД недоступна
+  /metrics:
+    get:
+      summary: Prometheus-метрики
+      responses:
+        "200":
+          description: Метрики в формате Prometheus text exposition
+  /api/v1/ingest:
     post:
       summary: Принять пачку точек телеметрии
       security:
@@ -41,8 +62,8 @@ paths:
         "429":
           description: Превышен лимит запросов
         "503":
-          description: Очередь приёма заполнена (backpressure) — повторить позже
-  /query:
+          description: Очередь приёма заполнена (backpressure) - повторить позже
+  /api/v1/query:
     get:
       summary: Получить агрегаты по устройству за период
       security:
@@ -89,12 +110,55 @@ paths:
           description: Превышен лимит запросов
         "500":
           description: Ошибка базы данных
-  /metrics:
+  /api/v1/devices:
     get:
-      summary: Prometheus-метрики
+      summary: Список известных device_id
+      description: >
+        Читает из того же материализованного представления, что и /query —
+        устройство появится в списке только после ближайшего рефреша MV,
+        а не сразу после первой вставленной точки.
+      security:
+        - ApiKeyAuth: []
       responses:
         "200":
-          description: Метрики в формате Prometheus text exposition
+          description: Список устройств
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      type: string
+        "401":
+          description: Отсутствует или неверный API-ключ
+        "429":
+          description: Превышен лимит запросов
+        "500":
+          description: Ошибка базы данных
+  /api/v1/dlq/stats:
+    get:
+      summary: Статистика dead-letter очереди
+      description: >
+        Сколько батчей ушло в DLQ после исчерпания ретраев и когда был
+        последний сбой. Не заменяет чтение самого DLQ-файла для
+        расследования конкретных потерянных точек.
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Статистика DLQ (пустая, если DLQ не настроен)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DLQStats"
+        "401":
+          description: Отсутствует или неверный API-ключ
+        "429":
+          description: Превышен лимит запросов
+        "500":
+          description: Не удалось прочитать DLQ-файл
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -130,3 +194,13 @@ components:
         avg_value:
           type: number
           format: double
+    DLQStats:
+      type: object
+      properties:
+        count:
+          type: integer
+        last_failed_at:
+          type: string
+          format: date-time
+        last_error:
+          type: string

@@ -1,7 +1,9 @@
 package dlq
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,7 +13,6 @@ import (
 	"flowgate/internal/models"
 )
 
-// Потокобезопасный append-only писатель dlq.
 type Writer struct {
 	mu   sync.Mutex
 	path string
@@ -54,4 +55,41 @@ func (w *Writer) Write(points []models.TelemetryPoint, cause error) error {
 		return fmt.Errorf("write dlq entry: %w", err)
 	}
 	return nil
+}
+
+type Stats struct {
+	Count        int       `json:"count"`
+	LastFailedAt time.Time `json:"last_failed_at,omitzero"`
+	LastError    string    `json:"last_error,omitempty"`
+}
+
+func (w *Writer) Stats() (Stats, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	f, err := os.Open(w.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return Stats{}, nil
+	}
+	if err != nil {
+		return Stats{}, fmt.Errorf("open dlq file: %w", err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+
+	var stats Stats
+	for scanner.Scan() {
+		stats.Count++
+		var e entry
+		if unmarshalErr := json.Unmarshal(scanner.Bytes(), &e); unmarshalErr == nil {
+			stats.LastFailedAt = e.FailedAt
+			stats.LastError = e.Error
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return stats, fmt.Errorf("scan dlq file: %w", err)
+	}
+	return stats, nil
 }

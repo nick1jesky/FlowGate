@@ -1,23 +1,33 @@
--- Базовая схема для локального запуска / docker-compose.
--- Продовое решение потребует нормальный инструмент миграций (goose/atlas)
--- и партиционирование raw_metrics по времени - см. roadmap в README.
+BEGIN;
 
-CREATE  TABLE IF NOT EXISTS raw_metrics (
-    id         BIGSERIAL PRIMARY KEY,
-    device_id  TEXT        NOT NULL,
-    metric     TEXT        NOT NULL,
-    value      DOUBLE PRECISION NOT NULL,
-    ts         TIMESTAMPTZ NOT NULL,
-    inserted_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+-- 1. Создаём партиционированную таблицу raw_metrics
+CREATE TABLE IF NOT EXISTS raw_metrics (
+    id          BIGSERIAL,
+    device_id   TEXT             NOT NULL,
+    metric      TEXT             NOT NULL,
+    value       DOUBLE PRECISION NOT NULL,
+    ts          TIMESTAMPTZ      NOT NULL,
+    inserted_at TIMESTAMPTZ      NOT NULL DEFAULT now(),
+    PRIMARY KEY (id, ts)
+) PARTITION BY RANGE (ts);
 
--- Основной паттерн доступа в GetAggregated: WHERE device_id = ... AND ts BETWEEN ...
+-- 2. Индекс для основного запроса по device_id + ts
 CREATE INDEX IF NOT EXISTS idx_raw_metrics_device_ts ON raw_metrics (device_id, ts);
 
--- Минутные агрегаты по устройствам. Отдельная MV вместо прямого запроса
--- к raw_metrics - тяжёлый GROUP BY больше не выполняется на каждый /query,
--- только на плановом REFRESH (см. internal/refresher).
+-- 3. Партиции на ближайшие месяцы (пример для 2026)
+CREATE TABLE IF NOT EXISTS raw_metrics_y2026m08 PARTITION OF raw_metrics
+    FOR VALUES FROM ('2026-08-01') TO ('2026-09-01');
 
+CREATE TABLE IF NOT EXISTS raw_metrics_y2026m09 PARTITION OF raw_metrics
+    FOR VALUES FROM ('2026-09-01') TO ('2026-10-01');
+
+CREATE TABLE IF NOT EXISTS raw_metrics_y2026m10 PARTITION OF raw_metrics
+    FOR VALUES FROM ('2026-10-01') TO ('2026-11-01');
+
+-- Страховочная DEFAULT-партиция (для данных вне заданных диапазонов)
+CREATE TABLE IF NOT EXISTS raw_metrics_default PARTITION OF raw_metrics DEFAULT;
+
+-- 4. Материализованное представление с минутными агрегатами
 CREATE MATERIALIZED VIEW IF NOT EXISTS agg_metrics_1m AS
 SELECT
     device_id,
@@ -28,11 +38,11 @@ FROM raw_metrics
 GROUP BY device_id, date_trunc('minute', ts)
 WITH NO DATA;
 
--- REFRESH ... CONCURRENTLY требует уникальный индекс на MV - без него
--- рефреш блокирует чтения на всё время пересчёта.
+-- 5. Уникальный индекс для CONCURRENT REFRESH
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agg_metrics_1m_device_minute
     ON agg_metrics_1m (device_id, minute);
 
--- Первое наполнение (WITH NO DATA создаёт пустую MV; REFRESH CONCURRENTLY
--- невозможен, пока MV не заполнена хотя бы раз обычным REFRESH).
+-- 6. Первое наполнение (MV пока пуста, обычный REFRESH допустим)
 REFRESH MATERIALIZED VIEW agg_metrics_1m;
+
+COMMIT;

@@ -62,7 +62,7 @@ func createRepository(pool *pgxpool.Pool) *storage.Repository {
 	return storage.NewRepository(pool)
 }
 
-func createDLQWriter(cfg *config.Config, logger *logrus.Logger) service.DeadLetterWriter {
+func createDLQWriter(cfg *config.Config, logger *logrus.Logger) *dlq.Writer {
 	w, err := dlq.NewWriter(cfg.IngestDLQPath)
 	if err != nil {
 		logger.WithError(err).Error("Failed to initialize dead-letter queue writer, failed batches will be dropped")
@@ -88,8 +88,8 @@ func createIngestService(repo *storage.Repository, cfg *config.Config, dlqWriter
 	)
 }
 
-func createHandler(ingestService *service.IngestService, c cache.Cache, cfg *config.Config, logger *logrus.Logger) *api.Handler {
-	return api.NewHandler(ingestService, c, api.Options{
+func createHandler(ingestService *service.IngestService, c cache.Cache, dlqInspector api.DLQInspector, cfg *config.Config, logger *logrus.Logger) *api.Handler {
+	return api.NewHandler(ingestService, c, dlqInspector, api.Options{
 		SubmitTimeout:   cfg.IngestSubmitTimeout,
 		CacheTTL:        cfg.CacheTTL,
 		CacheStaleAfter: cfg.CacheStaleAfter,
@@ -117,11 +117,16 @@ func createMVRefresher(pool *pgxpool.Pool, cfg *config.Config, rate refresher.Ra
 	}, rate, logger)
 }
 
-func createGinRouter(handler *api.Handler, cfg *config.Config, logger *logrus.Logger) *gin.Engine {
+func createGinRouter(handler *api.Handler, healthHandler *api.HealthHandler, cfg *config.Config, logger *logrus.Logger) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.LoggerWithWriter(logger.Writer()))
 	router.Use(gin.Recovery())
+
+	// Без auth/rate-limit - оркестратор (docker-compose healthcheck,
+	// Kubernetes probes) не должен зависеть от API-ключа.
+	router.GET("/healthz", healthHandler.Liveness)
+	router.GET("/readyz", healthHandler.Readiness)
 
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 	router.GET("/openapi.yaml", func(c *gin.Context) {
@@ -139,6 +144,8 @@ func createGinRouter(handler *api.Handler, cfg *config.Config, logger *logrus.Lo
 	{
 		v1.POST("/ingest", handler.Ingest)
 		v1.GET("/query", handler.Query)
+		v1.GET("/devices", handler.ListDevices)
+		v1.GET("/dlq/stats", handler.DLQStats)
 	}
 	return router
 }
@@ -160,10 +167,33 @@ func main() {
 	}
 
 	repo := createRepository(pool)
-	dlqWriter := createDLQWriter(&cfg, logger)
-	ingestService := createIngestService(repo, &cfg, dlqWriter, logger)
-	handler := createHandler(ingestService, redisCache, &cfg, logger)
-	router := createGinRouter(handler, &cfg, logger)
+
+	// dlqWriterConcrete - *dlq.Writer, может быть nil-указателем (если DLQ
+	// не удалось поднять). Явная проверка ЗДЕСЬ, до присвоения в
+	// интерфейсные переменные - присвоить nil-указатель конкретного типа
+	// напрямую в поле интерфейса значит получить НЕ-nil интерфейс с nil
+	// внутри ("typed nil"): последующая проверка `== nil` внутри
+	// IngestService/Handler перестанет срабатывать, а вызов метода на
+	// таком значении запаникует. Поэтому конвертируем только если
+	// указатель реально не nil.
+	dlqWriterConcrete := createDLQWriter(&cfg, logger)
+	var dlqForIngest service.DeadLetterWriter
+	var dlqInspector api.DLQInspector
+	if dlqWriterConcrete != nil {
+		dlqForIngest = dlqWriterConcrete
+		dlqInspector = dlqWriterConcrete
+	}
+
+	ingestService := createIngestService(repo, &cfg, dlqForIngest, logger)
+	handler := createHandler(ingestService, redisCache, dlqInspector, &cfg, logger)
+
+	var cachePinger api.Pinger
+	if rc, ok := redisCache.(*cache.RedisCache); ok {
+		cachePinger = rc
+	}
+	healthHandler := api.NewHealthHandler(pool, cachePinger, cfg.ReadinessTimeout)
+
+	router := createGinRouter(handler, healthHandler, &cfg, logger)
 
 	// Адаптивный рефреш MV.
 	// Интервал подстраивается под скорость приёма.

@@ -1,9 +1,5 @@
 //go:build integration
 
-// Запуск: go test -tags=integration ./internal/storage/...
-// Требует локально работающий Docker (testcontainers поднимает
-// одноразовый контейнер Postgres на время теста). Не входит в обычный
-// `go test ./...`, чтобы CI/локальные прогоны без Docker не падали.
 package storage_test
 
 import (
@@ -46,8 +42,6 @@ func setupPostgres(t *testing.T) *pgxpool.Pool {
 			"POSTGRES_PASSWORD": "flowgate",
 			"POSTGRES_DB":       "flowgate",
 		},
-		// docker-entrypoint-initdb.d прогоняет все .sql в алфавитном
-		// порядке — ровно так же, как в docker-compose.yml.
 		Files: []testcontainers.ContainerFile{
 			{HostFilePath: migrationsDir, ContainerFilePath: "/docker-entrypoint-initdb.d", FileMode: 0o755},
 		},
@@ -108,9 +102,6 @@ func TestRepository_BulkInsertAndGetAggregated(t *testing.T) {
 		t.Fatalf("BulkInsert failed: %v", err)
 	}
 
-	// agg_metrics_1m - материализованное представление, заполняется только
-	// по REFRESH; в этом тесте рефрешим его напрямую, как это иначе делал
-	// бы internal/refresher по расписанию.
 	if _, err := pool.Exec(ctx, "REFRESH MATERIALIZED VIEW agg_metrics_1m"); err != nil {
 		t.Fatalf("refresh materialized view: %v", err)
 	}

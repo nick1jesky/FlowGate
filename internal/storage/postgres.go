@@ -9,8 +9,6 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// PoolOptions - параметры пула соединений, настраиваемые снаружи
-// (через переменные среды в config.Config), а не зашитые в код.
 type PoolOptions struct {
 	MaxConns          int32
 	MinConns          int32
@@ -20,10 +18,6 @@ type PoolOptions struct {
 	ConnectTimeout    time.Duration
 }
 
-// NewPool создаёт пул соединений с PostgreSQL. Используется вместо
-// одиночного *pgx.Conn, чтобы конкурентные BulkInsert из разных
-// ingest-воркеров не боролись за одно и то же соединение (что раньше
-// приводило бы к гонке / сериализации всех записей через один conn).
 func NewPool(ctx context.Context, databaseURL string, opts PoolOptions, logger *logrus.Logger) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {

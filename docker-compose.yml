@@ -58,6 +58,7 @@ services:
       REDIS_WRITE_TIMEOUT: "${REDIS_WRITE_TIMEOUT:-500ms}"
       REDIS_POOL_SIZE: "${REDIS_POOL_SIZE:-20}"
       REDIS_PING_TIMEOUT: "${REDIS_PING_TIMEOUT:-2s}"
+      READINESS_TIMEOUT: "${READINESS_TIMEOUT:-2s}"
 
       INGEST_SUBMIT_TIMEOUT: "${INGEST_SUBMIT_TIMEOUT:-100ms}"
       INGEST_TASK_TIMEOUT: "${INGEST_TASK_TIMEOUT:-5s}"
@@ -81,12 +82,10 @@ services:
       MV_REFRESH_LOW_RATE_THRESHOLD: "${MV_REFRESH_LOW_RATE_THRESHOLD:-50}"
       MV_RATE_REDIS_KEY: "${MV_RATE_REDIS_KEY:-flowgate:ingest:rate}"
 
-      # Пусто по умолчанию — auth выключен. Задай через .env, чтобы включить.
       API_KEYS: "${API_KEYS:-}"
       RATE_LIMIT_RPS: "${RATE_LIMIT_RPS:-100}"
       RATE_LIMIT_BURST: "${RATE_LIMIT_BURST:-200}"
-      # TLS_CERT_FILE / TLS_KEY_FILE — пусто по умолчанию (plain HTTP;
-      # в проде TLS обычно терминируется на ingress/reverse-proxy).
+
 
   prometheus:
     image: prom/prometheus:latest
@@ -97,6 +96,21 @@ services:
     volumes:
       - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
+  grafana:
+    image: grafana/grafana:latest
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+
 volumes:
   pgdata:
   dlq_data:
+  grafana_data:

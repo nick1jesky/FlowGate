@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"flowgate/internal/cache"
+	"flowgate/internal/dlq"
 	"flowgate/internal/metrics"
 	"flowgate/internal/models"
 
@@ -18,6 +19,12 @@ import (
 type IngestService interface {
 	Submit(ctx context.Context, points []models.TelemetryPoint) error
 	GetAggregated(ctx context.Context, deviceID string, from, to time.Time) ([]models.AggregatedPoint, error)
+	ListDevices(ctx context.Context) ([]string, error)
+}
+
+// DLQInspector - минимум, нужный для операционной видимости DLQ.
+type DLQInspector interface {
+	Stats() (dlq.Stats, error)
 }
 
 type Options struct {
@@ -32,14 +39,21 @@ type Handler struct {
 	logger        *logrus.Logger
 	cache         cache.Cache
 	opts          Options
+	dlq           DLQInspector
 }
 
-func NewHandler(ingestService IngestService, c cache.Cache, opts Options, logger *logrus.Logger) *Handler {
+func NewHandler(
+	ingestService IngestService,
+	c cache.Cache,
+	dlqInspector DLQInspector,
+	opts Options,
+	logger *logrus.Logger) *Handler {
 	return &Handler{
 		ingestService: ingestService,
 		logger:        logger,
 		cache:         c,
 		opts:          opts,
+		dlq:           dlqInspector,
 	}
 }
 
@@ -131,7 +145,7 @@ func (h *Handler) Query(c *gin.Context) {
 	c.JSON(http.StatusOK, data)
 }
 
-// Фоновая актуализация кэша, которая не привязана к ctx http запроса.
+// Фоновая актуализация кэша
 func (h *Handler) refreshCache(key, deviceID string, from, to time.Time) {
 	ctx, cancel := context.WithTimeout(context.Background(), h.opts.RefreshTimeout)
 	defer cancel()
@@ -159,4 +173,28 @@ func (h *Handler) storeInCache(ctx context.Context, key string, data []models.Ag
 type cacheItem struct {
 	Data      []models.AggregatedPoint `json:"data"`
 	FetchedAt time.Time                `json:"fetched_at"`
+}
+
+func (h *Handler) ListDevices(c *gin.Context) {
+	devices, err := h.ingestService.ListDevices(c.Request.Context())
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to list devices")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"devices": devices})
+}
+
+func (h *Handler) DLQStats(c *gin.Context) {
+	if h.dlq == nil {
+		c.JSON(http.StatusOK, gin.H{"count": 0})
+		return
+	}
+	stats, err := h.dlq.Stats()
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to read DLQ stats")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read dead-letter queue"})
+		return
+	}
+	c.JSON(http.StatusOK, stats)
 }

@@ -37,6 +37,10 @@ func (f *fakeIngestService) GetAggregated(_ context.Context, _ string, _, _ time
 	return f.aggregated, nil
 }
 
+func (f *fakeIngestService) ListDevices(_ context.Context) ([]string, error) {
+	return nil, nil
+}
+
 type fakeCache struct {
 	stored map[string][]byte
 }
@@ -56,7 +60,7 @@ func (c *fakeCache) Set(_ context.Context, key string, value []byte, _ time.Dura
 func newTestHandler(svc *fakeIngestService, c *fakeCache) *Handler {
 	logger := logrus.New()
 	logger.SetLevel(logrus.PanicLevel)
-	return NewHandler(svc, c, Options{
+	return NewHandler(svc, c, nil, Options{
 		SubmitTimeout:   time.Second,
 		CacheTTL:        time.Minute,
 		CacheStaleAfter: 30 * time.Second,

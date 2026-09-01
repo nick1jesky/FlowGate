@@ -38,6 +38,10 @@ func (f *fakeRepo) GetAggregated(_ context.Context, _ string, _, _ time.Time) ([
 	return nil, nil
 }
 
+func (f *fakeRepo) ListDevices(_ context.Context) ([]string, error) {
+	return nil, nil
+}
+
 func (f *fakeRepo) snapshot() (calls, totalPoints int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -77,7 +81,7 @@ func TestIngestService_FlushesBySize(t *testing.T) {
 
 	svc := NewIngestService(repo, 1, 100, time.Second, 10, time.Hour, RetryConfig{}, nil, logger)
 
-	// 3 запроса по 4 точки = 12 точек, порог батча — 10: должен случиться
+	// 3 запроса по 4 точки = 12 точек, порог батча - 10: должен случиться
 	// хотя бы один flush по размеру без ожидания таймера (мы взяли
 	// заведомо большой batchMaxDelay = час).
 	for range 3 {
@@ -125,7 +129,7 @@ func TestIngestService_FlushesByTimer(t *testing.T) {
 
 func TestIngestService_RetriesThenSucceeds(t *testing.T) {
 	repo := &fakeRepo{}
-	repo.failNextN.Store(2) // первые 2 попытки — ошибка, 3-я — успех
+	repo.failNextN.Store(2) // первые 2 попытки - ошибка, 3-я - успех
 
 	logger := logrus.New()
 	logger.SetLevel(logrus.PanicLevel)
@@ -175,7 +179,7 @@ func TestIngestService_SubmitBackpressure(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.PanicLevel)
 
-	// Без воркеров (0), с ёмкостью канала 1 — второй Submit должен упереться
+	// Без воркеров (0), с ёмкостью канала 1 - второй Submit должен упереться
 	// в backpressure и вернуть ошибку по истечении переданного контекста.
 	svc := NewIngestService(repo, 0, 1, time.Second, 1000, time.Hour, RetryConfig{}, nil, logger)
 

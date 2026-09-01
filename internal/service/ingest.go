@@ -13,22 +13,23 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// Repository — всё, что нужно IngestService от слоя хранения. Абстракция
+// Repository - всё, что нужно IngestService от слоя хранения. Абстракция
 // над *storage.Repository, чтобы юнит-тесты могли подставить фейк вместо
 // реального Postgres.
 type Repository interface {
 	BulkInsert(ctx context.Context, points []models.TelemetryPoint) (int64, error)
 	GetAggregated(ctx context.Context, deviceID string, from, to time.Time) ([]models.AggregatedPoint, error)
+	ListDevices(ctx context.Context) ([]string, error)
 }
 
 // DeadLetterWriter получает батчи, для которых исчерпаны все попытки
-// записи в БД. Реализация — internal/dlq.Writer; может быть nil, тогда
+// записи в БД. Реализация - internal/dlq.Writer; может быть nil, тогда
 // такие батчи просто теряются (после логирования ошибки), как и раньше.
 type DeadLetterWriter interface {
 	Write(points []models.TelemetryPoint, cause error) error
 }
 
-// RetryConfig — параметры повторных попыток flush при сбое BulkInsert.
+// RetryConfig - параметры повторных попыток flush при сбое BulkInsert.
 type RetryConfig struct {
 	MaxRetries int           // 0 = без повторов, сразу в DLQ/лог
 	Backoff    time.Duration // базовая задержка; растёт линейно с номером попытки
@@ -47,7 +48,7 @@ type IngestService struct {
 	retry RetryConfig
 	dlq   DeadLetterWriter
 
-	// pointsIngested — счётчик точек, принятых с последнего опроса
+	// pointsIngested - счётчик точек, принятых с последнего опроса
 	// PointsIngestedSinceLastCheck (используется адаптивным MV-рефрешером
 	// как индикатор текущей нагрузки). Атомарный, т.к. Submit вызывается
 	// конкурентно из множества HTTP-хендлеров.
@@ -98,10 +99,10 @@ func (s *IngestService) startWorker(id int) {
 	}()
 }
 
-// worker — накопитель-и-flusher. Объединяет Points из НЕСКОЛЬКИХ входящих
+// worker - накопитель-и-flusher. Объединяет Points из НЕСКОЛЬКИХ входящих
 // задач (то есть из нескольких разных HTTP-запросов) в один батч и вызывает
 // BulkInsert не на каждую задачу, а по достижении batchMaxSize точек ЛИБО
-// по истечении batchMaxDelay с последнего flush — что наступит раньше.
+// по истечении batchMaxDelay с последнего flush - что наступит раньше.
 // Это резко снижает число COPY-вызовов под нагрузкой из множества мелких
 // запросов, ценой задержки до batchMaxDelay перед тем, как точка реально
 // попадёт в БД.
@@ -163,7 +164,7 @@ func (s *IngestService) worker(id int) {
 }
 
 // flush выполняет запись батча в БД с ретраями (линейно растущий бэкофф).
-// Использует собственный независимый контекст на КАЖДУЮ попытку — не
+// Использует собственный независимый контекст на КАЖДУЮ попытку - не
 // привязанный ни к одному из исходных HTTP-запросов, чьи точки попали в
 // этот батч, и не растянутый на все попытки сразу (иначе долгий ретрай мог
 // бы держать один и тот же контекст открытым неоправданно долго).
@@ -209,7 +210,7 @@ func (s *IngestService) flush(workerID int, points []models.TelemetryPoint) {
 		return
 	}
 	if dlqErr := s.dlq.Write(points, lastErr); dlqErr != nil {
-		s.logger.WithError(dlqErr).Error("Failed to write batch to dead-letter queue — data lost")
+		s.logger.WithError(dlqErr).Error("Failed to write batch to dead-letter queue - data lost")
 		return
 	}
 	metrics.DLQWritesTotal.Inc()
@@ -219,7 +220,7 @@ func (s *IngestService) flush(workerID int, points []models.TelemetryPoint) {
 // используется ТОЛЬКО для контроля таймаута постановки в канал (backpressure) —
 // он НЕ передаётся дальше, так как HTTP-запрос обычно завершается
 // (и его ctx отменяется) задолго до того, как воркер реально сбросит батч
-// в БД. У самого flush — собственный независимый таймаут, см. IngestService.flush.
+// в БД. У самого flush - собственный независимый таймаут, см. IngestService.flush.
 func (s *IngestService) Submit(ctx context.Context, points []models.TelemetryPoint) error {
 	t := task.NewIngestTask(points, false)
 	select {
@@ -242,6 +243,10 @@ func (s *IngestService) PointsIngestedSinceLastCheck() int64 {
 
 func (s *IngestService) GetAggregated(ctx context.Context, deviceID string, from, to time.Time) ([]models.AggregatedPoint, error) {
 	return s.repo.GetAggregated(ctx, deviceID, from, to)
+}
+
+func (s *IngestService) ListDevices(ctx context.Context) ([]string, error) {
+	return s.repo.ListDevices(ctx)
 }
 
 func (s *IngestService) Shutdown(ctx context.Context) error {

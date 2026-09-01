@@ -1,0 +1,108 @@
+{
+  "title": "FlowGate",
+  "uid": "flowgate-overview",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Ingest rate (points/sec)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(flowgate_ingest_points_total[1m])", "legendFormat": "points/sec" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Ingest requests by outcome",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(flowgate_ingest_requests_total[1m])", "legendFormat": "{{status}}" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Batch flush rate by trigger",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(flowgate_ingest_batch_flush_total[1m])", "legendFormat": "{{trigger}}" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "BulkInsert duration (p50/p95/p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(flowgate_ingest_bulk_insert_duration_seconds_bucket[5m]))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, rate(flowgate_ingest_bulk_insert_duration_seconds_bucket[5m]))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, rate(flowgate_ingest_bulk_insert_duration_seconds_bucket[5m]))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Ingest channel depth vs capacity",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "flowgate_ingest_channel_depth", "legendFormat": "depth" },
+        { "expr": "flowgate_ingest_channel_capacity", "legendFormat": "capacity" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Cache result ratio (/query)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(flowgate_query_cache_requests_total[1m])", "legendFormat": "{{result}}" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "MV adaptive refresh interval (sec)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "flowgate_mv_refresh_interval_seconds", "legendFormat": "interval" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "DB pool connections",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "flowgate_db_pool_acquired_conns", "legendFormat": "acquired" },
+        { "expr": "flowgate_db_pool_idle_conns", "legendFormat": "idle" },
+        { "expr": "flowgate_db_pool_max_conns", "legendFormat": "max" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Flush retries / DLQ writes / worker panics",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 32 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(flowgate_ingest_flush_retries_total[5m])", "legendFormat": "flush retries/sec" },
+        { "expr": "rate(flowgate_ingest_dlq_writes_total[5m])", "legendFormat": "DLQ writes/sec" },
+        { "expr": "rate(flowgate_ingest_worker_panics_total[5m])", "legendFormat": "worker panics/sec" }
+      ]
+    }
+  ]
+}

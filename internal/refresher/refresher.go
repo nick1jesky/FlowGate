@@ -11,30 +11,20 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// RateSource сообщает, сколько точек было принято на ingest с прошлого
-// опроса, и сбрасывает свой внутренний счётчик - реализуется
-// service.IngestService.
 type RateSource interface {
 	PointsIngestedSinceLastCheck() int64
 }
 
-// Config - все пороги и границы адаптации настраиваются снаружи.
 type Config struct {
 	ViewName string
 
 	MinInterval time.Duration // интервал при высокой нагрузке
 	MaxInterval time.Duration // интервал при низкой нагрузке/простое
 
-	// Пороги скорости приёма (точек/сек), между которыми интервал
-	// линейно интерполируется от MinInterval до MaxInterval.
 	HighRateThreshold float64
 	LowRateThreshold  float64
 }
 
-// Refresher периодически выполняет REFRESH MATERIALIZED VIEW CONCURRENTLY,
-// подстраивая интервал под текущую скорость приёма телеметрии: под высокой
-// нагрузкой обновляет чаще (данные актуальнее), в простое - реже (не тратит
-// ресурсы БД впустую).
 type Refresher struct {
 	pool   *pgxpool.Pool
 	cfg    Config
@@ -46,8 +36,6 @@ func New(pool *pgxpool.Pool, cfg Config, rate RateSource, logger *logrus.Logger)
 	return &Refresher{pool: pool, cfg: cfg, rate: rate, logger: logger}
 }
 
-// Run блокирует вызывающего до отмены ctx. Предполагается запуск в
-// отдельной горутине.
 func (r *Refresher) Run(ctx context.Context) {
 	interval := r.cfg.MaxInterval
 	metrics.MVRefreshIntervalSeconds.Set(interval.Seconds())
@@ -89,15 +77,10 @@ func (r *Refresher) Run(ctx context.Context) {
 }
 
 func (r *Refresher) refresh(ctx context.Context) error {
-	// #nosec G201 - ViewName приходит из конфигурации сервиса, не из
-	// пользовательского ввода.
 	_, err := r.pool.Exec(ctx, fmt.Sprintf("REFRESH MATERIALIZED VIEW CONCURRENTLY %s", r.cfg.ViewName))
 	return err
 }
 
-// computeInterval линейно интерполирует между MinInterval (высокая
-// нагрузка) и MaxInterval (низкая/простой) по замеренному rate точек/сек
-// за прошедший интервал.
 func (r *Refresher) computeInterval(pointsSinceLastTick int64, currentInterval time.Duration) time.Duration {
 	if currentInterval <= 0 {
 		return r.cfg.MaxInterval

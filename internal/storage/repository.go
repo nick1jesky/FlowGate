@@ -53,16 +53,6 @@ func (r *Repository) BulkInsert(ctx context.Context, points []models.TelemetryPo
 	return copyCount, nil
 }
 
-// GetAggregated читает из материализованного представления agg_metrics_1m
-// (обновляется адаптивно, см. internal/refresher), а не напрямую из
-// raw_metrics - иначе каждый /query заново пересчитывал бы AVG по всем
-// сырым точкам в диапазоне.
-//
-// Важный побочный эффект: данные могут отставать от реального времени на
-// величину текущего интервала рефреша (адаптивно от 5с до 60с при
-// дефолтных настройках). Для дашборда почти реального времени это
-// приемлемо; если нужна секундная точность - эту функцию придётся
-// переключить на raw_metrics для "хвоста" последних N минут.
 func (r *Repository) GetAggregated(ctx context.Context, deviceID string, from, to time.Time) ([]models.AggregatedPoint, error) {
 	query, args, err := psql.
 		Select("device_id", "minute", "avg_value").
@@ -91,4 +81,31 @@ func (r *Repository) GetAggregated(ctx context.Context, deviceID string, from, t
 		result = append(result, p)
 	}
 	return result, rows.Err()
+}
+
+func (r *Repository) ListDevices(ctx context.Context) ([]string, error) {
+	query, args, err := psql.
+		Select("DISTINCT device_id").
+		From("agg_metrics_1m").
+		OrderBy("device_id").
+		ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build query: %w", err)
+	}
+
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var devices []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		devices = append(devices, id)
+	}
+	return devices, rows.Err()
 }

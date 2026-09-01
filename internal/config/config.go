@@ -47,6 +47,7 @@ type Config struct {
 	CacheRefreshTimeout time.Duration // таймаут фонового обновления кэша
 
 	HTTPShutdownTimeout time.Duration
+	ReadinessTimeout    time.Duration // таймаут пингов зависимостей в /readyz
 
 	// Адаптивное обновление материализованного представления
 	MVViewName                 string
@@ -57,10 +58,10 @@ type Config struct {
 	MVRateRedisKey             string        // ключ в Redis для кластерного счётчика скорости приёма
 
 	// Безопасность API
-	APIKeys        []string // непустой список включает проверку X-API-Key; пустой — auth выключен (как раньше)
-	RateLimitRPS   float64  // запросов/сек на клиента (по IP), 0 — рейт-лимит выключен
+	APIKeys        []string // непустой список включает проверку X-API-Key; пустой - auth выключен (как раньше)
+	RateLimitRPS   float64  // запросов/сек на клиента (по IP), 0 - рейт-лимит выключен
 	RateLimitBurst int      // допустимый всплеск сверх RPS
-	TLSCertFile    string   // путь к сертификату; пусто — TLS на уровне приложения выключен
+	TLSCertFile    string   // путь к сертификату; пусто - TLS на уровне приложения выключен
 	TLSKeyFile     string
 }
 
@@ -71,9 +72,6 @@ func Load() Config {
 		WorkersCount:  getEnvAsInt("WORKERS_COUNT", 5),
 		ChannelBuffer: getEnvAsInt("CHANNEL_BUFFER", 100),
 
-		// Пул соединений должен покрывать все ingest-воркеры плюс запас
-		// под конкурентные /query-запросы - иначе воркеры будут стоять
-		// в очереди за соединением друг у друга.
 		DBMaxConns:          int32(getEnvAsInt("DB_MAX_CONNS", 20)),
 		DBMinConns:          int32(getEnvAsInt("DB_MIN_CONNS", 2)),
 		DBMaxConnLifetime:   getEnvAsDuration("DB_MAX_CONN_LIFETIME", 30*time.Minute),
@@ -104,6 +102,7 @@ func Load() Config {
 		CacheRefreshTimeout: getEnvAsDuration("CACHE_REFRESH_TIMEOUT", 5*time.Second),
 
 		HTTPShutdownTimeout: getEnvAsDuration("HTTP_SHUTDOWN_TIMEOUT", 5*time.Second),
+		ReadinessTimeout:    getEnvAsDuration("READINESS_TIMEOUT", 2*time.Second),
 
 		MVViewName:                 getEnvAsString("MV_VIEW_NAME", "agg_metrics_1m"),
 		MVRefreshMinInterval:       getEnvAsDuration("MV_REFRESH_MIN_INTERVAL", 5*time.Second),
@@ -136,7 +135,6 @@ func getEnvAsInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
-// getEnvAsDuration парсит значения вида time.ParseDuration
 func getEnvAsDuration(key string, defaultValue time.Duration) time.Duration {
 	if val := os.Getenv(key); val != "" {
 		if d, err := time.ParseDuration(val); err == nil {
